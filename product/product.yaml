@@ -1,0 +1,13 @@
+_ > nanoagent.plugin.v0001.ProductConfig:
+tagline: "Find research gaps: related NLP concepts that papers rarely study together, with MinHash on a budget"
+summary: "Pick a corpus of ACL Anthology papers, a frequency floor, a similarity threshold and a Jaccard ceiling, and an agent finds every pair of research concepts that are each well studied and close in meaning, yet rarely appear in the same paper. MinHash signatures estimate how much each pair's papers overlap, exact checks confirm the gaps, and one cost budget pays for both, so the agent has to decide how long its signatures should be. Every answer is checked against an exact computation."
+highlights:
+  - "Real data: 21,934 ACL Anthology papers from 2016 to 2024, 493 NLP concepts with their embeddings"
+  - "One budget for signatures and exact checks: too few rows rank poorly, too many leave nothing to check with"
+  - "The verifier rederives every charge and checks precision, recall and that every gap was really measured"
+  - "Runs offline on bundled data, in integer and fraction arithmetic"
+steps:
+  - "Choose a corpus, a frequency floor, a similarity threshold, a Jaccard ceiling, a cost budget and the recall you require"
+  - "The agent builds MinHash signatures and reads how the related pairs rank by estimated overlap"
+  - "It checks the most likely gaps exactly, within what the budget has left"
+  - "It submits the gaps it confirmed, and the verdict shows the recall it reached"
