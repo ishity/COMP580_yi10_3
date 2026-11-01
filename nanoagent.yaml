@@ -1,7 +1,7 @@
 _ > nanoagent.plugin.v0001.ManifestConfig:
 id: concept-gap-detection
 name: Concept Gap Detection
-version: 0.1.2
+version: 0.1.3
 status: ready
 spec: nanoagent.plugin/v0001
 
@@ -41,3 +41,4 @@ tasks > dict[contract.Task, nanoagent.plugin.v0001.TaskConfig]:
       build_signatures ranks every related pair by its number of matching rows, fewest first, because those are most likely to be gaps, and saves the ranking in the workspace. It returns the signature_id, the cost charged, used and remaining, how many related pairs there are, and a histogram: buckets of pairs in rank order, each with its fewest and most matching rows, the matching share as estimated Jaccard (truncated to 4 places), how many pairs it holds, what checking all of them would cost (check_cost), and its rank range, first_rank to last_rank. The ranking may hold more pairs than the budget can check: with too few rows, many pairs tie at the top and the true gaps are mixed with pairs that only look rare; with too many rows, little budget is left to check them.
       Check pairs with check_pairs: pass the signature_id, a rank range (start_rank, from 1, and count), and the task's dataset, min_papers, threshold, max_jaccard and cost_budget exactly as given (pass them to build_signatures exactly as given, too). It measures only pairs no earlier call checked, charges their |A| + |B|, and returns the gaps among them with their exact intersection and union sizes, how many pairs it checked and skipped, and the cost charged, used and remaining. A pair checked before is skipped at no cost, even under another signature_id, and when it is a gap it is returned again with the same sizes, marked previously_scored. The workspace keeps one ledger for each set of task values, so work from an earlier run of this same task is still there and still counts against its cost_budget: rebuilding its signatures and rechecking its ranges cost nothing. A range whose new pairs cost more than remains is refused, and the error says the largest count that fits.
       Submit every gap any check_pairs call returned, each once, with a and b exactly as returned. Submit no other pair: a pair that is not a gap makes the answer wrong, and the answer passes only when it holds at least min_recall of all gaps. If no check_pairs call returned a gap, submit an empty list: that is the correct answer when no related pair is a gap.
+      Keep each step short: every reply is limited to about 2,000 tokens, and a reply that runs out before calling a tool ends the task, so call a tool after brief reasoning instead of computing estimates by hand.
