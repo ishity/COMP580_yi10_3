@@ -11,10 +11,11 @@ import verifier
 import verifier.rule
 from contract import TOOLS, CheckInput, Dataset, DescribeInput, FindInput, SignaturesInput, Tool
 from plugin import build_signatures, check_pairs, describe_corpus, exact_gaps, rule
-from plugin.bundle import LEDGER, hash_rows, load
+from plugin.bundle import hash_rows, ledger_key, load
 
 ROOT = Path(__file__).resolve().parents[1]
 EDGE = {"dataset": Dataset.EDGE_CASES, "min_papers": 4, "threshold": "0.80", "max_jaccard": "0.25"}
+EDGE_KEY = "edge-cases-m4-t0.800-j0.250-b60"  # the edge-cases ledger's name at cost_budget 60
 
 
 def checked(tool: Tool, given, made, workspace: Path) -> dict:
@@ -39,8 +40,12 @@ def check(workspace: Path, start: int, number: int, cost_budget: int = 60, signa
     return given, check_pairs(given, workspace)
 
 
-def ranked(workspace: Path, signature_id: str) -> list[list]:
-    return json.loads((workspace / "candidates" / f"{signature_id}.json").read_text())["pairs"]
+def ledger_file(workspace: Path, key: str = EDGE_KEY) -> Path:
+    return workspace / "ledgers" / f"{key}.json"
+
+
+def ranked(workspace: Path, signature_id: str, key: str = EDGE_KEY) -> list[list]:
+    return json.loads((workspace / "candidates" / key / f"{signature_id}.json").read_text())["pairs"]
 
 
 def slow_gaps(dataset: Dataset, min_papers: int, threshold: str, max_jaccard: str) -> dict[tuple[str, str], tuple]:
@@ -84,7 +89,7 @@ def test_describe_corpus_counts_the_bundle(tmp_path: Path, dataset: Dataset, min
     ) == sizes
     assert (made.hash_rows, made.row_rate) == (len(hash_rows()[1]), "0.001")
     assert checked(Tool.DESCRIBE_CORPUS, given, made, tmp_path)["valid"] is True
-    assert not (tmp_path / LEDGER).exists()  # describing charges nothing
+    assert not (tmp_path / "ledgers").exists()  # describing charges nothing
 
 
 def test_the_nested_rule_matches_the_bundled_list() -> None:
@@ -129,15 +134,16 @@ def test_build_signatures_is_deterministic_and_ranked(tmp_path: Path) -> None:
     second = build_signatures(given, tmp_path / "two")
     assert first == second and first.signature_id == "acl-full-r64" and first.related_pairs == 69
     assert first.cost_charged == 3570  # ceil(64 * 55767 / 1000)
-    saved = (tmp_path / "one" / "candidates" / "acl-full-r64.json").read_text()
-    assert saved == (tmp_path / "two" / "candidates" / "acl-full-r64.json").read_text()
+    path = Path("candidates/acl-full-m50-t0.700-j0.005-b24000/acl-full-r64.json")
+    saved = (tmp_path / "one" / path).read_text()
+    assert saved == (tmp_path / "two" / path).read_text()
     assert sum(row.pairs for row in first.histogram) == first.related_pairs
     assert sum(row.check_cost for row in first.histogram) == 53234
     assert first.histogram[0].first_rank == 1 and first.histogram[-1].last_rank == first.related_pairs
     assert checked(Tool.BUILD_SIGNATURES, given, first, tmp_path / "one")["valid"] is True
     run = json.loads(saved)
     run["pairs"].reverse()
-    (tmp_path / "one" / "candidates" / "acl-full-r64.json").write_text(json.dumps(run))
+    (tmp_path / "one" / path).write_text(json.dumps(run))
     assert checked(Tool.BUILD_SIGNATURES, given, first, tmp_path / "one")["valid"] is False
 
 
@@ -170,7 +176,7 @@ def test_signatures_alone_can_exceed_the_budget(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match=r"256-row signatures cost 23 more .* only 20 of the cost budget 20 remain"
                                          r".* rows may be at most 229"):
         signatures(tmp_path, 256, cost_budget=20)
-    assert not (tmp_path / LEDGER).exists()
+    assert not (tmp_path / "ledgers").exists()
     signatures(tmp_path, 200, cost_budget=20)  # ceil(200 * 87 / 1000) = 18
     with pytest.raises(ValueError, match="rows may be at most 229; up to 200 rows cost nothing more"):
         signatures(tmp_path, 256, cost_budget=20)
@@ -193,17 +199,24 @@ def test_build_signatures_says_what_is_wrong(tmp_path: Path, changes: dict, mess
         signatures(tmp_path, **fields)
 
 
-def test_the_ledger_keeps_the_task_fixed(tmp_path: Path) -> None:
+def test_each_set_of_task_values_keeps_its_own_ledger(tmp_path: Path) -> None:
     signatures(tmp_path, 8)
-    signatures(tmp_path, 8, threshold="0.8")  # the same value
-    with pytest.raises(ValueError, match="pass cost_budget 60"):
-        signatures(tmp_path, 8, cost_budget=61)
-    with pytest.raises(ValueError, match='pass threshold "0.80"'):
-        signatures(tmp_path, 8, threshold="0.75")
-    with pytest.raises(ValueError, match='pass max_jaccard "0.25"'):
+    assert signatures(tmp_path, 8, threshold="0.8")[1].cost_charged == 0  # the same value, so the same ledger
+    assert signatures(tmp_path, 8, cost_budget=61)[1].cost_charged == 1  # another instance: its own ledger
+    assert sorted(path.name for path in (tmp_path / "ledgers").iterdir()) == [
+        f"{EDGE_KEY}.json", "edge-cases-m4-t0.800-j0.250-b61.json"
+    ]
+    assert ledger_key(SignaturesInput(Dataset.ACL_FULL, 64, 50, "0.7", "0.005", 24000)) == "acl-full-m50-t0.700-j0.005-b24000"
+    with pytest.raises(ValueError, match="no signatures are built for dataset edge-cases, min_papers 4, threshold '0.80',"
+                                         " max_jaccard '0.3' and cost_budget 60: call build_signatures first"):
         check(tmp_path, 1, 1, max_jaccard="0.3")
-    with pytest.raises(ValueError, match="pass min_papers 4"):
+    with pytest.raises(ValueError, match="no signatures are built .* min_papers 5"):
         check(tmp_path, 1, 1, min_papers=5)
+    ledger = json.loads(ledger_file(tmp_path).read_text())  # a ledger whose contents disagree with its name
+    ledger["threshold"] = "0.75"
+    ledger_file(tmp_path).write_text(json.dumps(ledger))
+    with pytest.raises(ValueError, match='pass threshold "0.75"'):
+        signatures(tmp_path, 8)
 
 
 @pytest.fixture
@@ -230,8 +243,18 @@ def test_a_pair_checked_under_one_signature_is_skipped_under_another(tmp_path: P
     check(tmp_path, 1, 6, cost_budget=100)
     signatures(tmp_path, 4, cost_budget=100)
     given, made = check(tmp_path, 1, 6, cost_budget=100, signature_id="edge-cases-r4")
-    assert (made.checked, made.skipped, made.cost_charged, made.gaps) == (0, 6, 0, [])
+    assert (made.checked, made.skipped, made.cost_charged) == (0, 6, 0)
+    first = json.loads(ledger_file(tmp_path, "edge-cases-m4-t0.800-j0.250-b100").read_text())["checks"][0]["gaps"]
+    assert len(made.gaps) == 3 and all(gap.previously_scored for gap in made.gaps)  # returned again from the ledger
+    assert sorted((g.a, g.b, g.intersection, g.union) for g in made.gaps) == sorted(
+        (g["a"], g["b"], g["intersection"], g["union"]) for g in first
+    )
     assert checked(Tool.CHECK_PAIRS, given, made, tmp_path)["valid"] is True
+    made.gaps[0].previously_scored = False
+    assert checked(Tool.CHECK_PAIRS, given, made, tmp_path)["valid"] is False
+    made.gaps[0].previously_scored = True
+    made.gaps.pop()
+    assert checked(Tool.CHECK_PAIRS, given, made, tmp_path)["valid"] is False
 
 
 def test_check_pairs_refuses_a_range_over_budget_and_says_what_fits(built: Path) -> None:
@@ -240,12 +263,12 @@ def test_check_pairs_refuses_a_range_over_budget_and_says_what_fits(built: Path)
     with pytest.raises(ValueError, match=rf"ranks 1 to 6 hold 6 pairs not yet checked \(0 already checked\), costing 65,"
                                          rf" but only 59 of the cost budget 60 remain: with start_rank 1, count may be at most {fits}"):
         check(built, 1, 6)
-    assert json.loads((built / LEDGER).read_text())["checks"] == []
+    assert json.loads(ledger_file(built).read_text())["checks"] == []
 
 
 def test_check_pairs_says_when_one_pair_alone_is_too_costly(tmp_path: Path) -> None:
     signatures(tmp_path, 8, cost_budget=9)  # 1 for the signatures, 8 left; every pair costs at least 9
-    costs = [cost for *_, cost in ranked(tmp_path, "edge-cases-r8")]
+    costs = [cost for *_, cost in ranked(tmp_path, "edge-cases-r8", "edge-cases-m4-t0.800-j0.250-b9")]
     with pytest.raises(ValueError, match=rf"the pair at rank 1 alone costs {costs[0]}, so no range from rank 1 fits"):
         check(tmp_path, 1, 1, cost_budget=9)
 
@@ -274,7 +297,7 @@ def test_check_pairs_needs_signatures(tmp_path: Path) -> None:
 
 def test_verify_output_refuses_a_tampered_check(built: Path) -> None:
     given, made = check(built, 1, 5)
-    assert made.gaps
+    assert made.gaps and not any(gap.previously_scored for gap in made.gaps)
     assert checked(Tool.CHECK_PAIRS, given, made, built)["valid"] is True
     made.cost_remaining += 1
     assert checked(Tool.CHECK_PAIRS, given, made, built)["valid"] is False
@@ -352,8 +375,9 @@ def test_decimals_outside_the_rule_are_refused(text: str) -> None:
 
 def solve(workspace: Path, dataset: Dataset, min_papers: int, threshold: str, max_jaccard: str, budget: int, rows: int):
     """A single signature, then the longest prefix of the ranking that fits the remaining budget, in one check."""
-    made = build_signatures(SignaturesInput(dataset, rows, min_papers, threshold, max_jaccard, budget), workspace)
-    costs = [cost for *_, cost in ranked(workspace, made.signature_id)]
+    given = SignaturesInput(dataset, rows, min_papers, threshold, max_jaccard, budget)
+    made = build_signatures(given, workspace)
+    costs = [cost for *_, cost in ranked(workspace, made.signature_id, ledger_key(given))]
     count, spent = 0, 0
     while count < len(costs) and spent + costs[count] <= made.cost_remaining:
         spent += costs[count]

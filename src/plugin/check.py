@@ -1,8 +1,9 @@
 """check_pairs: measure a rank range of the related pairs exactly, and return the gaps, within the cost budget.
 
-Every call is recorded in ledger.json, which build_signatures started, and must pass the task values it fixed.
+Every call is recorded in ledgers/<ledger_key>.json, the ledger build_signatures started for the same task values.
 Checking a pair costs |A| + |B|, the posting reads of merging its two sorted paper lists. A pair any earlier call
-checked is skipped, neither checked nor charged again.
+checked is skipped, neither checked nor charged again; when it is a gap, it is returned again with the integers the
+ledger recorded, marked previously_scored, so that a rerun of the same instance in a kept workspace finds it too.
 """
 
 from __future__ import annotations
@@ -11,12 +12,13 @@ import json
 import re
 from pathlib import Path
 
-from contract import CheckInput, CheckOutput, MeasuredPair
+from contract import CheckInput, CheckOutput, FoundGap
 from plugin.bundle import (
     candidates_path,
     check_locked,
     cost_used,
     decimal,
+    ledger_key,
     load,
     positive,
     read_ledger,
@@ -38,11 +40,16 @@ def check_pairs(given: CheckInput, workspace: Path) -> CheckOutput:
             f"signature_id {given.signature_id!r} is not a {given.dataset.value} signature:"
             f" pass a signature_id build_signatures returned for it, {given.dataset.value}-r<rows>"
         )
-    ledger = read_ledger(workspace)
+    key = ledger_key(given)
+    ledger = read_ledger(workspace, key)
     if ledger is None:
-        raise ValueError("no signatures are built yet: call build_signatures first, then check its ranks")
+        raise ValueError(
+            f"no signatures are built for dataset {given.dataset.value}, min_papers {given.min_papers}, threshold"
+            f" {given.threshold!r}, max_jaccard {given.max_jaccard!r} and cost_budget {given.cost_budget}: call"
+            " build_signatures first with these values copied from the task input, then check its ranks"
+        )
     check_locked(ledger, given)
-    path = candidates_path(workspace, given.signature_id)
+    path = candidates_path(workspace, key, given.signature_id)
     if not path.exists() or all(call["signature_id"] != given.signature_id for call in ledger["signatures"]):
         raise ValueError(f"signatures {given.signature_id} are not built: call build_signatures for them first")
     ranked = json.loads(path.read_text())["pairs"]
@@ -81,13 +88,21 @@ def check_pairs(given: CheckInput, workspace: Path) -> CheckOutput:
 
     corpus = load(given.dataset)
     index = {name: i for i, name in enumerate(corpus.names)}
-    gaps = []
-    for a, b, _ in new:
+    scored = {(g["a"], g["b"]): g for call in ledger["checks"] for g in call["gaps"]}
+    gaps, found = [], []
+    for a, b, _ in span:
+        if (a, b) in seen:
+            if (a, b) in scored:
+                earlier = scored[(a, b)]
+                gaps.append(FoundGap(a, b, earlier["intersection"], earlier["union"], previously_scored=True))
+            continue
         held_a, held_b = corpus.papers[index[a]], corpus.papers[index[b]]
         inter = len(set(held_a) & set(held_b))
         union = len(held_a) + len(held_b) - inter
         if is_gap(inter, union, max_jaccard):
-            gaps.append(MeasuredPair(a=a, b=b, intersection=inter, union=union))
+            gap = FoundGap(a, b, inter, union, previously_scored=False)
+            gaps.append(gap)
+            found.append(gap)
     ledger["checks"].append(
         {
             "signature_id": given.signature_id,
@@ -96,10 +111,10 @@ def check_pairs(given: CheckInput, workspace: Path) -> CheckOutput:
             "checked": [[a, b] for a, b, _ in new],
             "skipped": len(span) - len(new),
             "charged": charged,
-            "gaps": [{"a": g.a, "b": g.b, "intersection": g.intersection, "union": g.union} for g in gaps],
+            "gaps": [{"a": g.a, "b": g.b, "intersection": g.intersection, "union": g.union} for g in found],
         }
     )
-    write_ledger(workspace, ledger)
+    write_ledger(workspace, key, ledger)
     total = len(seen) + len(new)
     return CheckOutput(
         gaps=gaps,

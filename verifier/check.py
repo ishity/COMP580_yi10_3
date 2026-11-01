@@ -1,13 +1,11 @@
-from pathlib import Path
-
 from .checks import (
-    CANDIDATES,
-    LEDGER,
     cost_used,
     decimals_problem,
     gap_problem,
+    key_of,
     locked_problem,
-    read_json,
+    read_candidates,
+    read_ledger,
     result,
     signature_id_problem,
 )
@@ -28,7 +26,10 @@ def verify_input(value):
 
 
 def verify_output(input_value, output_value, workspace):
-    ledger = read_json(Path(workspace) / LEDGER)
+    key = key_of(input_value)
+    if key is None:
+        return result(False, "threshold and max_jaccard must be decimal strings")
+    ledger = read_ledger(workspace, key)
     if ledger is None or not ledger["checks"]:
         return result(False, "check_pairs left no record of its call in the ledger")
     problem = locked_problem(ledger, input_value)
@@ -43,7 +44,7 @@ def verify_output(input_value, output_value, workspace):
         input_value.count,
     ):
         return result(False, "the ledger's last check is not this call's signatures and rank range")
-    saved = read_json(Path(workspace) / CANDIDATES / f"{input_value.signature_id}.json")
+    saved = read_candidates(workspace, key, input_value.signature_id)
     if saved is None:
         return result(False, f"signatures {input_value.signature_id}'s ranked pairs are not saved in the workspace")
     first = input_value.start_rank
@@ -61,20 +62,34 @@ def verify_output(input_value, output_value, workspace):
         len(new), len(span) - len(new), charged
     ):
         return result(False, f"the range's {len(new)} new pairs cost {charged}: checked, skipped or cost_charged disagree")
-    gaps = [{"a": g.a, "b": g.b, "intersection": g.intersection, "union": g.union} for g in output_value.gaps]
-    if gaps != call["gaps"]:
-        return result(False, "the gaps differ from the ledger's")
+    # The newly found gaps the ledger records: newly checked pairs of the range, in rank order, gaps by their integers.
     order = {(a, b): rank for rank, (a, b, _) in enumerate(new)}
-    ranks = [order.get((g["a"], g["b"])) for g in gaps]
+    ranks = [order.get((g["a"], g["b"])) for g in call["gaps"]]
     if None in ranks or ranks != sorted(set(ranks)):
-        return result(False, "the gaps are not newly checked pairs of the range, in rank order")
+        return result(False, "the ledger's gaps are not newly checked pairs of the range, in rank order")
     max_jaccard = parse_decimal(input_value.max_jaccard)
-    for gap, (a, b, cost) in zip(gaps, [new[rank] for rank in ranks]):
+    for gap, rank in zip(call["gaps"], ranks):
         problem = gap_problem(gap, max_jaccard)
         if problem:
             return result(False, problem)
-        if gap["intersection"] + gap["union"] != cost:
-            return result(False, f"pair ({a!r}, {b!r}) has |A| + |B| = {cost}, not intersection + union")
+        if gap["intersection"] + gap["union"] != new[rank][2]:
+            return result(False, f"pair ({gap['a']!r}, {gap['b']!r}) has |A| + |B| = {new[rank][2]}, not intersection + union")
+    # The output: every gap of the range in rank order, those an earlier call found with its integers, marked.
+    fresh = {(g["a"], g["b"]): g for g in call["gaps"]}
+    scored = {(g["a"], g["b"]): g for past in earlier for g in past["gaps"]}
+    expected = []
+    for a, b, _ in span:
+        if (a, b) in seen:
+            if (a, b) in scored:
+                expected.append(scored[(a, b)] | {"previously_scored": True})
+        elif (a, b) in fresh:
+            expected.append(fresh[(a, b)] | {"previously_scored": False})
+    given = [
+        {"a": g.a, "b": g.b, "intersection": g.intersection, "union": g.union, "previously_scored": g.previously_scored}
+        for g in output_value.gaps
+    ]
+    if given != expected:
+        return result(False, "the gaps differ from the range's gaps the ledger records, new and previously scored")
     used = cost_used(ledger)
     total = len(seen) + len(new)
     if (output_value.total_checked, output_value.cost_used, output_value.cost_remaining) != (
@@ -83,4 +98,4 @@ def verify_output(input_value, output_value, workspace):
         return result(False, f"{total} pairs are checked and {used} spent: totals disagree")
     if used > input_value.cost_budget:
         return result(False, f"{used} is spent, over the cost budget of {input_value.cost_budget}")
-    return result(True, "the range is checked within budget", checked=len(new), gaps=len(gaps))
+    return result(True, "the range is checked within budget", checked=len(new), gaps=len(expected))

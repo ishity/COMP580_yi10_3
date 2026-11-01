@@ -1,4 +1,5 @@
-"""The exact rules: decimals, similarity, nesting, gaps, costs and the histogram, in integers and Fractions only.
+"""The exact rules: decimals, similarity, nesting, gaps, costs, the histogram and the workspace file names, in integers
+and Fractions only.
 
 src/plugin/rule.py and verifier/rule.py hold this same file, so the tools and the verifier decide alike.
 """
@@ -12,6 +13,8 @@ HASH_ROWS = 256  # how many MinHash rows src/plugin/data/hashes.json holds
 ROW_RATE = "0.001"  # r: one signature entry costs a thousandth of one exact posting read
 EXACT_BUCKETS = 16  # at most this many distinct matching-row counts get one bucket each
 NON_ALNUM = re.compile(r"[^a-z0-9]+")
+LEDGERS = "ledgers"  # one ledger per set of locked task values: ledgers/<ledger_key>.json
+CANDIDATES = "candidates"  # each ledger's rankings: candidates/<ledger_key>/<signature_id>.json
 
 
 def parse_decimal(text):
@@ -20,6 +23,30 @@ def parse_decimal(text):
         return None
     value = Fraction(text)
     return value if 0 < value <= 1 else None
+
+
+def three_places(value):
+    """A DECIMAL_RULE value (a Fraction) written by value to 3 places, e.g. Fraction(7, 10) -> "0.700"."""
+    scaled = value * 1000
+    if scaled.denominator != 1:
+        raise ValueError(f"{value} has more than 3 decimal places")
+    return f"{scaled.numerator // 1000}.{scaled.numerator % 1000:03d}"
+
+
+def ledger_key(dataset, min_papers, threshold, max_jaccard, cost_budget):
+    """The name of the ledger for these locked task values (``dataset`` a string, the two decimals Fractions), e.g.
+    "acl-full-m50-t0.700-j0.005-b24000": different task values never share a ledger, and equal values always do."""
+    return f"{dataset}-m{min_papers}-t{three_places(threshold)}-j{three_places(max_jaccard)}-b{cost_budget}"
+
+
+def ledger_path(key):
+    """The ledger's path in the workspace."""
+    return f"{LEDGERS}/{key}.json"
+
+
+def candidates_path(key, signature_id):
+    """The path in the workspace of the ranking that signatures ``signature_id`` saved under ledger ``key``."""
+    return f"{CANDIDATES}/{key}/{signature_id}.json"
 
 
 def similar(dot, norm_a, norm_b, threshold):

@@ -5,10 +5,7 @@ import re
 from fractions import Fraction
 from pathlib import Path
 
-from .rule import DECIMAL_RULE, histogram, parse_decimal, signature_charge
-
-LEDGER = "ledger.json"
-CANDIDATES = "candidates"
+from .rule import DECIMAL_RULE, candidates_path, histogram, ledger_key, ledger_path, parse_decimal, signature_charge
 
 
 def result(valid, message, *, score=None, **details):
@@ -39,6 +36,24 @@ def read_json(path):
     if not path.is_file():
         return None
     return json.loads(path.read_text())
+
+
+def key_of(value):
+    """The name of the ledger for the task values ``value`` passes, or None when a decimal is not DECIMAL_RULE."""
+    threshold, max_jaccard = parse_decimal(value.threshold), parse_decimal(value.max_jaccard)
+    if threshold is None or max_jaccard is None:
+        return None
+    return ledger_key(value.dataset.value, value.min_papers, threshold, max_jaccard, value.cost_budget)
+
+
+def read_ledger(workspace, key):
+    """The ledger named ``key`` in the workspace, or None when there is none."""
+    return read_json(Path(workspace) / ledger_path(key))
+
+
+def read_candidates(workspace, key, signature_id):
+    """The ranking signatures ``signature_id`` saved under ledger ``key``, or None when there is none."""
+    return read_json(Path(workspace) / candidates_path(key, signature_id))
 
 
 def locked_problem(ledger, value):

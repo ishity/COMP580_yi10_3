@@ -4,14 +4,16 @@ The first failing check decides: malformed pairs, the budget, precision, provena
 """
 
 from fractions import Fraction
-from pathlib import Path
 
-from .checks import CANDIDATES, LEDGER, charges_problem, cost_used, locked_problem, read_json, result
-from .rule import parse_decimal
+from .checks import charges_problem, cost_used, key_of, locked_problem, read_candidates, read_ledger, result
+from .rule import ledger_path, parse_decimal
 
 
 def verify_task(arguments, output, reference, workspace):
     """``arguments``: a contract FindInput; ``output``: a FindOutput; ``reference``: exact_gaps' ExactOutput."""
+    key = key_of(arguments)
+    if key is None:
+        return result(False, "threshold and max_jaccard must be decimal strings in (0, 1]")
     if (reference.dataset, reference.min_papers) != (arguments.dataset, arguments.min_papers) or (
         parse_decimal(reference.threshold), parse_decimal(reference.max_jaccard)
     ) != (parse_decimal(arguments.threshold), parse_decimal(arguments.max_jaccard)):
@@ -33,10 +35,11 @@ def verify_task(arguments, output, reference, workspace):
     if len(set(submitted)) != len(submitted):
         return result(False, "a pair is submitted twice, counting (a, b) and (b, a) as one pair")
 
-    # 2. Budget: the ledger is this task's, every charge is rederived, and the total fits the cost budget.
-    ledger = read_json(Path(workspace) / LEDGER)
+    # 2. Budget: the ledger named by the task's values is this task's, every charge is rederived, and the total fits the
+    # cost budget. Ledgers of other instances in the same workspace are not read.
+    ledger = read_ledger(workspace, key)
     if ledger is None and submitted:
-        return result(False, f"there is no {LEDGER}, so no submitted pair was checked")
+        return result(False, f"there is no ledger {ledger_path(key)}, so no submitted pair was checked")
     related = {(pair.a, pair.b): pair for pair in reference.related}
     calls = [] if ledger is None else ledger["checks"]
     used = 0
@@ -50,7 +53,7 @@ def verify_task(arguments, output, reference, workspace):
         if problem:
             return result(False, problem)
         for call in ledger["signatures"]:
-            saved = read_json(Path(workspace) / CANDIDATES / f"{call['signature_id']}.json")
+            saved = read_candidates(workspace, key, call["signature_id"])
             if saved is None:
                 return result(False, f"signatures {call['signature_id']}'s ranked pairs are not saved in the workspace")
             ranked = {(a, b): cost for _, a, b, cost in saved["pairs"]}

@@ -51,6 +51,17 @@ class MeasuredPair(Output):
 
 
 @dataclass
+class FoundGap(Output):
+    a: Annotated[str, CONCEPT_A]
+    b: Annotated[str, CONCEPT_B]
+    intersection: Annotated[int, INTERSECTION]
+    union: Annotated[int, UNION]
+    previously_scored: Annotated[
+        bool, "True when an earlier call, perhaps in an earlier run of this task, checked this pair: returned again from the ledger at no cost"
+    ]
+
+
+@dataclass
 class MatchBucket(Output):
     min_matches: Annotated[int, "The fewest matching signature rows among this bucket's pairs"]
     max_matches: Annotated[int, "The most matching signature rows among this bucket's pairs"]
@@ -118,7 +129,9 @@ class CheckInput(Output):
 
 @dataclass
 class CheckOutput(Output):
-    gaps: Annotated[list[MeasuredPair], "The newly checked pairs in the range that are gaps, in rank order"]
+    gaps: Annotated[
+        list[FoundGap], "The range's gaps in rank order: those checked now, and those an earlier call checked, marked previously_scored"
+    ]
     checked: Annotated[int, "How many pairs in the range were checked now"]
     skipped: Annotated[int, "How many pairs in the range an earlier call checked, so not checked or charged again"]
     cost_charged: Annotated[int, "What this call charged: |A| + |B| summed over the pairs checked now"]

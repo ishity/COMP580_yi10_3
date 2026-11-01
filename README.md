@@ -12,8 +12,8 @@ launch command, environment, input and output checks and lifecycle.
 | Tool | Does | Code |
 |---|---|---|
 | `describe_corpus` | Gives a corpus's paper and concept counts, the frequent concepts F and their postings P, the related pairs and what checking them all would cost, the MinHash rows (256) and the signature rate r (0.001); charges nothing | `src/plugin/describe.py` |
-| `build_signatures` | Builds `rows`-row MinHash signatures of the frequent concepts, charges only the rows beyond the longest built so far, ranks every related pair by matching rows (fewest first) into `candidates/<signature_id>.json` in the workspace, and returns the id, the cost charged, used and left, and a histogram of the ranking | `src/plugin/signatures.py` |
-| `check_pairs` | Measures a rank range of a saved ranking exactly, charges `\|A\| + \|B\|` per pair not checked before, and returns the gaps with their intersection and union sizes; records every call in `ledger.json` and refuses a range over the budget | `src/plugin/check.py` |
+| `build_signatures` | Builds `rows`-row MinHash signatures of the frequent concepts, charges only the rows beyond the longest built so far, ranks every related pair by matching rows (fewest first) into `candidates/<ledger_key>/<signature_id>.json` in the workspace, and returns the id, the cost charged, used and left, and a histogram of the ranking | `src/plugin/signatures.py` |
+| `check_pairs` | Measures a rank range of a saved ranking exactly, charges `\|A\| + \|B\|` per pair not checked before, and returns the gaps with their intersection and union sizes, including gaps an earlier call found, marked `previously_scored`; records every call in `ledgers/<ledger_key>.json` and refuses a range over the budget | `src/plugin/check.py` |
 | `exact_gaps` | Measures every related pair exactly and lists the gaps: the task's reference, which the model never sees | `src/plugin/exact.py` |
 
 ### Tasks
@@ -55,10 +55,22 @@ share a paper never match, since each row is one-to-one on paper indices. Rankin
 model: the agent sees each ranking's histogram, with one bucket per matching-row count when there are at
 most 16, else one per range 0, 1, 2–3, 4–7 and so on; each bucket gives its matching rows, its estimates
 truncated to 4 places, its pair count, the cost of checking all of it and its rank range. The first
-`build_signatures` call fixes the ledger's dataset, `min_papers`, `threshold`, `max_jaccard` and
-`cost_budget`, and `check_pairs` must pass the same. A pair any earlier call checked is skipped and not
-charged again. Every refused call says what was wrong and which value would be valid, for example the most
-rows or the largest `count` that still fits.
+`build_signatures` call for a set of task values starts that set's ledger, and `check_pairs` must pass the same
+values to find it. A pair any earlier call checked is skipped and not charged again; if it is a gap, it is
+returned again with the sizes the ledger recorded, marked `previously_scored`. Every refused call says what was
+wrong and which value would be valid, for example the most rows or the largest `count` that still fits.
+
+### Ledgers and kept workspaces
+
+RUSH Lab copies a member's files into every run's workspace and writes them back afterwards, so files persist
+across runs and instances. Each ledger is therefore named from the task values it locks:
+`ledgers/<dataset>-m<min_papers>-t<threshold>-j<max_jaccard>-b<cost_budget>.json`, with both decimals written
+by value to 3 places, for example `ledgers/acl-full-m50-t0.700-j0.005-b24000.json`. Its rankings live in
+`candidates/<the same key>/`. Different instances never share a ledger or a ranking, and equal values (`"0.8"`
+and `"0.80"`) always share one. A second run of the same instance continues its ledger and its spending:
+rebuilding signatures it built costs nothing, and rechecking ranks it checked returns the same gaps, marked
+`previously_scored`, so the rerun's answer passes too. The rule lives in `rule.py`, shared by the tools and
+the verifier.
 
 ### Verification
 
@@ -66,7 +78,7 @@ rows or the largest `count` that still fits.
 
 1. Malformed: every pair names two distinct concepts of the dataset, and no pair is submitted twice,
    counting `(a, b)` and `(b, a)` as one.
-2. Budget: the ledger is for the task's dataset, `min_papers`, `threshold`, `max_jaccard` and `cost_budget`
+2. Budget: the ledger named by the task's values (ledgers of other instances are never read) is for the task's dataset, `min_papers`, `threshold`, `max_jaccard` and `cost_budget`
    and the reference's P; each signature build is charged as the incremental rule says; every saved ranking
    holds exactly the reference's related pairs at cost `intersection + union`; each check is charged the
    `|A| + |B|` of its pairs, no pair is checked twice, and the total stays within `cost_budget`. A non-empty
@@ -130,22 +142,30 @@ output against its own, and NanoAgent and the verifier get the same classes. A f
 and the MCP server returns an error result.
 
 `verifier/` is deterministic: it imports only the standard library and `contract`, and reads only the
-workspace's `candidates/` and `ledger.json`. Beyond the task check, it rederives every tool call: for
+workspace's `ledgers/` and `candidates/`. Beyond the task check, it rederives every tool call: for
 `build_signatures`, the signature id, each build's incremental charge, the cost used and left, and the
 ranking order and histogram against the saved ranking; for each `check_pairs` call, that the ledger checked
-exactly the range's new pairs at their saved cost, that every returned gap satisfies the Jaccard rule by its
-own integers and that `intersection + union` equals its cost, and that the totals add up; for `exact_gaps`,
+exactly the range's new pairs at their saved cost, that every newly found gap satisfies the Jaccard rule by its
+own integers and that `intersection + union` equals its cost, that the output lists exactly the range's gaps in
+rank order with earlier calls' gaps marked `previously_scored` and carrying their recorded sizes, and that the
+totals add up; for `exact_gaps`,
 that no related pair is nested and that the gaps are exactly the related pairs within the ceiling.
 
 ## Develop and run
 
+Run uv with `UV_NO_CONFIG=1`, so that no user or machine uv configuration (such as `exclude-newer`) reaches
+`uv.lock`:
+
 ```bash
+export UV_NO_CONFIG=1
 uv lock
 uv sync --extra dev
 uv run pytest
 uv run ruff check .
 uv lock --check
+UV_CACHE_DIR=$(mktemp -d) uv lock --check --offline
 ```
 
 NanoAgent passes the folder the plugin may write to as `NANOAGENT_WORKSPACE`; `build_signatures` writes
-`candidates/<signature_id>.json` there, and both `build_signatures` and `check_pairs` write `ledger.json`.
+`candidates/<ledger_key>/<signature_id>.json` there, and both `build_signatures` and `check_pairs` write
+`ledgers/<ledger_key>.json`.

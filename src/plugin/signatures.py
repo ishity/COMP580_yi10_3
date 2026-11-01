@@ -3,10 +3,11 @@
 Each frequent concept's signature holds, for each of the first ``rows`` hash rows (a, b), the least
 (a * x + b) mod p over its papers x. A related pair's estimate is the share of rows where the two signatures
 match: the chance that one row matches is the pair's Jaccard similarity. The related pairs go to
-candidates/<signature_id>.json, fewest matching rows first (most likely gaps first), ties in (a, b) order, each
+candidates/<ledger_key>/<signature_id>.json, fewest matching rows first (most likely gaps first), ties in (a, b) order, each
 with its matches and its exact check cost |A| + |B|, so that they never pass through the model.
 
-Every call is recorded in ledger.json. The first fixes the dataset, min_papers, threshold, max_jaccard and
+Every call is recorded in ledgers/<ledger_key>.json, the ledger named by the task values, and the ranking is saved
+under that ledger, so that instances sharing a workspace never share a ledger or a ranking. The first call fixes the dataset, min_papers, threshold, max_jaccard and
 cost_budget. Signatures are charged incrementally: the first rows of longer signatures are the shorter ones, so a
 build is charged only for rows beyond the longest built so far, and a build at or below it is charged 0.
 """
@@ -23,6 +24,7 @@ from plugin.bundle import (
     check_locked,
     cost_used,
     decimal,
+    ledger_key,
     load,
     positive,
     postings,
@@ -35,9 +37,9 @@ from plugin.bundle import (
 from plugin.rule import HASH_ROWS, histogram, signature_charge, signature_cost
 
 
-def _ledger(given: SignaturesInput, workspace: Path, total: int) -> dict:
+def _ledger(given: SignaturesInput, workspace: Path, key: str, total: int) -> dict:
     """The ledger so far, or a new one fixing this call's task values."""
-    ledger = read_ledger(workspace)
+    ledger = read_ledger(workspace, key)
     if ledger is not None:
         check_locked(ledger, given)
         return ledger
@@ -55,7 +57,8 @@ def build_signatures(given: SignaturesInput, workspace: Path) -> SignaturesOutpu
 
     corpus = load(given.dataset)
     total = postings(corpus, given.min_papers)
-    ledger = _ledger(given, workspace, total)
+    key = ledger_key(given)
+    ledger = _ledger(given, workspace, key, total)
     built = max((call["rows"] for call in ledger["signatures"]), default=0)
     charged = signature_charge(given.rows, built, total)
     used = cost_used(ledger)
@@ -79,7 +82,7 @@ def build_signatures(given: SignaturesInput, workspace: Path) -> SignaturesOutpu
         ranked.append((matches, pair.a, pair.b, pair.check_cost))
     ranked.sort()
 
-    path = candidates_path(workspace, sig)
+    path = candidates_path(workspace, key, sig)
     path.parent.mkdir(parents=True, exist_ok=True)
     saved = {
         "signature_id": sig,
@@ -91,7 +94,7 @@ def build_signatures(given: SignaturesInput, workspace: Path) -> SignaturesOutpu
     }
     path.write_text(json.dumps(saved) + "\n")
     ledger["signatures"].append({"signature_id": sig, "rows": given.rows, "charged": charged})
-    write_ledger(workspace, ledger)
+    write_ledger(workspace, key, ledger)
 
     buckets = histogram([(matches, cost) for matches, _, _, cost in ranked], given.rows)
     return SignaturesOutput(

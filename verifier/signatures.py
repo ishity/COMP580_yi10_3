@@ -1,15 +1,13 @@
-from pathlib import Path
-
 from .checks import (
-    CANDIDATES,
-    LEDGER,
     candidates_problem,
     charges_problem,
     cost_used,
     decimals_problem,
     histogram_of,
+    key_of,
     locked_problem,
-    read_json,
+    read_candidates,
+    read_ledger,
     result,
 )
 from .rule import HASH_ROWS
@@ -30,7 +28,10 @@ def verify_output(input_value, output_value, workspace):
     expected = f"{input_value.dataset.value}-r{input_value.rows}"
     if output_value.signature_id != expected:
         return result(False, f"signature_id must be {expected}, not {output_value.signature_id}")
-    ledger = read_json(Path(workspace) / LEDGER)
+    key = key_of(input_value)
+    if key is None:
+        return result(False, "threshold and max_jaccard must be decimal strings")
+    ledger = read_ledger(workspace, key)
     if ledger is None or not ledger["signatures"]:
         return result(False, "build_signatures left no record of its call in the ledger")
     problem = locked_problem(ledger, input_value) or charges_problem(ledger)
@@ -48,7 +49,7 @@ def verify_output(input_value, output_value, workspace):
         return result(False, f"{used} is spent: cost_charged, cost_used or cost_remaining disagree")
     if used > input_value.cost_budget:
         return result(False, f"{used} is spent, over the cost budget of {input_value.cost_budget}")
-    saved = read_json(Path(workspace) / CANDIDATES / f"{expected}.json")
+    saved = read_candidates(workspace, key, expected)
     if saved is None:
         return result(False, f"signatures {expected}'s ranked pairs are not saved in the workspace")
     problem = candidates_problem(saved, expected, input_value)

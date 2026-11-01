@@ -10,11 +10,10 @@ from functools import cache
 from pathlib import Path
 
 from contract import Dataset
+from plugin import rule
 from plugin.rule import DECIMAL_RULE, nested, parse_decimal, similar
 
 DATA = Path(__file__).with_name("data")
-LEDGER = "ledger.json"
-CANDIDATES = "candidates"
 LOCKED = ("dataset", "min_papers", "threshold", "max_jaccard", "cost_budget")
 
 
@@ -129,21 +128,36 @@ def signature_id_pattern(dataset: Dataset) -> str:
     return re.escape(dataset.value) + r"-r[1-9][0-9]*"
 
 
-def candidates_path(workspace: Path, signatures: str) -> Path:
-    return workspace / CANDIDATES / f"{signatures}.json"
+def ledger_key(given) -> str:
+    """The name of the ledger for the task values ``given`` passes: each instance keeps its own ledger, so a ledger an
+    earlier run of another instance left in the workspace never locks this one."""
+    return rule.ledger_key(
+        given.dataset.value,
+        given.min_papers,
+        decimal(given.threshold, "threshold"),
+        decimal(given.max_jaccard, "max_jaccard"),
+        given.cost_budget,
+    )
 
 
-def read_ledger(workspace: Path) -> dict | None:
-    path = workspace / LEDGER
+def candidates_path(workspace: Path, key: str, signatures: str) -> Path:
+    return workspace / rule.candidates_path(key, signatures)
+
+
+def read_ledger(workspace: Path, key: str) -> dict | None:
+    path = workspace / rule.ledger_path(key)
     return json.loads(path.read_text()) if path.exists() else None
 
 
-def write_ledger(workspace: Path, ledger: dict) -> None:
-    (workspace / LEDGER).write_text(json.dumps(ledger) + "\n")
+def write_ledger(workspace: Path, key: str, ledger: dict) -> None:
+    path = workspace / rule.ledger_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(ledger) + "\n")
 
 
 def check_locked(ledger: dict, given) -> None:
-    """Refuse a call whose task values differ from those the ledger fixed; decimals compare by value."""
+    """Refuse a call whose task values differ from those the ledger records; decimals compare by value. The ledger's
+    name already holds these values, so this only catches a ledger whose contents disagree with its name."""
     for field in LOCKED:
         value = getattr(given, field)
         fixed = ledger[field]
